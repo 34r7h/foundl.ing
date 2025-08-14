@@ -1,10 +1,25 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
-// Types
+// Types matching the new smart contract structure
+export interface ExecutionProposal {
+  id: string
+  executorId: string
+  executor: UserProfile
+  executionPlan: string
+  proposedBudget: number
+  estimatedDuration: number
+  equityRequested: number
+  proposedAt: string
+  isAccepted: boolean
+  isRejected: boolean
+}
+
 export interface Idea {
   id: string
+  tokenId: number
   creatorId: string
+  creator: UserProfile
   title: string
   description: string
   category: string
@@ -15,27 +30,13 @@ export interface Idea {
   developmentComplexity: string
   fundingRequired: number
   equityOffered: number
-  status: 'draft' | 'active' | 'funded' | 'in-progress' | 'completed'
+  status: 'open' | 'in-execution' | 'funded' | 'completed' | 'failed'
   nftTokenId: string
   createdAt: string
   updatedAt: string
-}
-
-export interface Project {
-  id: string
-  ideaId: string
-  executorId: string
-  title: string
-  description: string
-  milestones: Milestone[]
-  totalFunding: number
-  currentFunding: number
-  status: 'funding' | 'in-progress' | 'completed' | 'cancelled'
-  startDate: string
-  estimatedCompletion: string
-  actualCompletion?: string
-  createdAt: string
-  updatedAt: string
+  executionProposals: ExecutionProposal[]
+  acceptedProposalId?: string
+  projectTokenId?: string
 }
 
 export interface Milestone {
@@ -43,21 +44,47 @@ export interface Milestone {
   title: string
   description: string
   fundingAmount: number
-  status: 'pending' | 'in-progress' | 'completed' | 'paid'
+  status: 'pending' | 'in-progress' | 'completed' | 'paid' | 'overdue'
   dueDate: string
   completedDate?: string
 }
 
-export interface Funding {
+export interface InvestorDeal {
   id: string
   projectId: string
-  funderId: string
-  amount: number
+  investorId: string
+  investor: UserProfile
+  fundingAmount: number
   equityPercentage: number
   terms: string
-  status: 'pending' | 'approved' | 'rejected' | 'completed'
+  status: 'pending' | 'accepted' | 'rejected' | 'active'
+  proposedAt: string
+  fundedAt?: string
+}
+
+export interface Project {
+  id: string
+  tokenId: number
+  ideaId: string
+  idea: Idea
+  executorId: string
+  executor: UserProfile
+  title: string
+  description: string
+  milestones: Milestone[]
+  totalBudget: number
+  currentFunding: number
+  status: 'open' | 'funded' | 'in-progress' | 'completed' | 'failed' | 'cancelled'
+  startDate: string
+  estimatedCompletion: string
+  actualCompletion?: string
   createdAt: string
   updatedAt: string
+  executorEquity: number
+  investorEquity: number
+  creatorEquity: number
+  investorDeals: InvestorDeal[]
+  acceptedDealId?: string
 }
 
 export interface UserProfile {
@@ -96,10 +123,17 @@ export const useFoundlingStore = defineStore('foundling', () => {
   const error = ref<string | null>(null)
 
   // Computed
-  const activeIdeas = computed(() => ideas.value.filter(idea => idea.status === 'active'))
+  const openIdeas = computed(() => ideas.value.filter(idea => idea.status === 'open'))
+  const inExecutionIdeas = computed(() => ideas.value.filter(idea => idea.status === 'in-execution'))
   const fundedIdeas = computed(() => ideas.value.filter(idea => idea.status === 'funded'))
-  const activeProjects = computed(() => projects.value.filter(project => project.status === 'in-progress'))
-  const fundingProjects = computed(() => projects.value.filter(project => project.status === 'funding'))
+  const completedIdeas = computed(() => ideas.value.filter(idea => idea.status === 'completed'))
+  const failedIdeas = computed(() => ideas.value.filter(idea => idea.status === 'failed'))
+  
+  const openProjects = computed(() => projects.value.filter(project => project.status === 'open'))
+  const fundedProjects = computed(() => projects.value.filter(project => project.status === 'funded'))
+  const inProgressProjects = computed(() => projects.value.filter(project => project.status === 'in-progress'))
+  const completedProjects = computed(() => projects.value.filter(project => project.status === 'completed'))
+  const failedProjects = computed(() => projects.value.filter(project => project.status === 'failed'))
 
   // API base URL
   const API_BASE = 'http://localhost:3001'
@@ -143,7 +177,7 @@ export const useFoundlingStore = defineStore('foundling', () => {
   }
 
   // Idea operations
-  async function createIdea(ideaData: Omit<Idea, 'id' | 'creatorId' | 'createdAt' | 'updatedAt' | 'status' | 'nftTokenId'>, token: string) {
+  async function createIdea(ideaData: Omit<Idea, 'id' | 'creatorId' | 'createdAt' | 'updatedAt' | 'status' | 'nftTokenId' | 'executionProposals' | 'acceptedProposalId' | 'projectTokenId'>, token: string) {
     const result = await apiCall('/api/ideas', 'create', ideaData, token)
     await loadIdeas(token)
     return result.ideaId
@@ -169,8 +203,29 @@ export const useFoundlingStore = defineStore('foundling', () => {
     await loadIdeas(token)
   }
 
+  // Execution proposal operations
+  async function submitExecutionProposal(
+    ideaId: string, 
+    proposalData: Omit<ExecutionProposal, 'id' | 'executorId' | 'executor' | 'proposedAt' | 'isAccepted' | 'isRejected'>, 
+    token: string
+  ) {
+    const result = await apiCall('/api/ideas/proposals', 'submit', { ideaId, ...proposalData }, token)
+    await loadIdeas(token)
+    return result.proposalId
+  }
+
+  async function acceptExecutionProposal(ideaId: string, proposalId: string, token: string) {
+    await apiCall('/api/ideas/proposals', 'accept', { ideaId, proposalId }, token)
+    await loadIdeas(token)
+  }
+
+  async function rejectExecutionProposal(ideaId: string, proposalId: string, token: string) {
+    await apiCall('/api/ideas/proposals', 'reject', { ideaId, proposalId }, token)
+    await loadIdeas(token)
+  }
+
   // Project operations
-  async function createProject(projectData: Omit<Project, 'id' | 'executorId' | 'createdAt' | 'updatedAt' | 'currentFunding' | 'status'>, token: string) {
+  async function createProject(projectData: Omit<Project, 'id' | 'tokenId' | 'executorId' | 'executor' | 'createdAt' | 'updatedAt' | 'currentFunding' | 'status' | 'executorEquity' | 'investorEquity' | 'creatorEquity' | 'investorDeals' | 'acceptedDealId'>, token: string) {
     const result = await apiCall('/api/projects', 'create', projectData, token)
     await loadProjects(token)
     return result.projectId
@@ -196,19 +251,37 @@ export const useFoundlingStore = defineStore('foundling', () => {
     await loadProjects(token)
   }
 
-  // Funding operations
-  async function createFunding(fundingData: Omit<Funding, 'id' | 'funderId' | 'createdAt' | 'updatedAt' | 'status'>, token: string) {
-    const result = await apiCall('/api/funding', 'create', fundingData, token)
-    return result.fundingId
+  // Milestone operations
+  async function addMilestone(projectId: string, milestoneData: Omit<Milestone, 'id' | 'status' | 'completedDate'>, token: string) {
+    await apiCall('/api/projects/milestones', 'add', { projectId, ...milestoneData }, token)
+    await loadProjects(token)
   }
 
-  async function getProjectFunding(projectId: string, token?: string) {
-    const result = await apiCall('/api/funding', 'getByProject', { projectId }, token)
-    return result.fundings
+  async function completeMilestone(projectId: string, milestoneId: string, token: string) {
+    await apiCall('/api/projects/milestones', 'complete', { projectId, milestoneId }, token)
+    await loadProjects(token)
   }
 
-  async function updateFunding(fundingId: string, updates: Partial<Funding>, token: string) {
-    await apiCall('/api/funding', 'update', { fundingId, updates }, token)
+  async function payMilestone(projectId: string, milestoneId: string, amount: number, token: string) {
+    await apiCall('/api/projects/milestones', 'pay', { projectId, milestoneId, amount }, token)
+    await loadProjects(token)
+  }
+
+  // Investor deal operations
+  async function submitInvestorDeal(dealData: Omit<InvestorDeal, 'id' | 'investorId' | 'investor' | 'status' | 'proposedAt' | 'fundedAt'>, token: string) {
+    const result = await apiCall('/api/projects/deals', 'submit', dealData, token)
+    await loadProjects(token)
+    return result.dealId
+  }
+
+  async function acceptInvestorDeal(projectId: string, dealId: string, token: string) {
+    await apiCall('/api/projects/deals', 'accept', { projectId, dealId }, token)
+    await loadProjects(token)
+  }
+
+  async function rejectInvestorDeal(projectId: string, dealId: string, token: string) {
+    await apiCall('/api/projects/deals', 'reject', { projectId, dealId }, token)
+    await loadProjects(token)
   }
 
   // Profile operations
@@ -254,10 +327,16 @@ export const useFoundlingStore = defineStore('foundling', () => {
     error,
     
     // Computed
-    activeIdeas,
+    openIdeas,
+    inExecutionIdeas,
     fundedIdeas,
-    activeProjects,
-    fundingProjects,
+    completedIdeas,
+    failedIdeas,
+    openProjects,
+    fundedProjects,
+    inProgressProjects,
+    completedProjects,
+    failedProjects,
     
     // Actions
     createIdea,
@@ -265,14 +344,20 @@ export const useFoundlingStore = defineStore('foundling', () => {
     loadUserIdeas,
     getIdeaById,
     updateIdea,
+    submitExecutionProposal,
+    acceptExecutionProposal,
+    rejectExecutionProposal,
     createProject,
     loadProjects,
     loadUserProjects,
     getProjectById,
     updateProject,
-    createFunding,
-    getProjectFunding,
-    updateFunding,
+    addMilestone,
+    completeMilestone,
+    payMilestone,
+    submitInvestorDeal,
+    acceptInvestorDeal,
+    rejectInvestorDeal,
     loadUserProfile,
     updateUserProfile,
     loadUserStats,

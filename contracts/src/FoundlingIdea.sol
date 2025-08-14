@@ -9,12 +9,25 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 /**
  * @title FoundlingIdea
- * @dev NFT contract representing idea provenance equity with perpetual royalties
+ * @dev NFT contract representing idea provenance equity with execution bidding system
  */
 contract FoundlingIdea is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
     using Counters for Counters.Counter;
     
     Counters.Counter private _tokenIds;
+    
+    // Execution proposal structure
+    struct ExecutionProposal {
+        uint256 proposalId;
+        address executor;
+        string executionPlan;
+        uint256 proposedBudget;
+        uint256 estimatedDuration;
+        uint256 equityRequested; // Percentage (0-100)
+        uint256 proposedAt;
+        bool isAccepted;
+        bool isRejected;
+    }
     
     // Idea metadata
     struct Idea {
@@ -25,20 +38,36 @@ contract FoundlingIdea is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
         string category;
         uint256 createdAt;
         uint256 royaltyPercentage; // 5% = 500 (basis points)
-        bool isActive;
+        IdeaStatus status;
         uint256 totalFunding;
         address[] funders;
         mapping(address => uint256) fundingAmounts;
+        ExecutionProposal[] executionProposals;
+        uint256 acceptedProposalId;
+        uint256 projectTokenId; // Links to FoundlingProject when executed
+    }
+    
+    enum IdeaStatus {
+        Open,           // Open for execution proposals
+        InExecution,    // Execution proposal accepted, project created
+        Funded,         // Project funded and in progress
+        Completed,      // Project completed successfully
+        Failed          // Project failed, back to open status
     }
     
     // Token ID to Idea mapping
     mapping(uint256 => Idea) public ideas;
     
+    // Proposal counter
+    uint256 public proposalCounter;
+    
     // Events
     event IdeaCreated(uint256 indexed tokenId, address indexed creator, string title);
-    event IdeaFunded(uint256 indexed tokenId, address indexed funder, uint256 amount);
-    event RoyaltyDistributed(uint256 indexed tokenId, address indexed recipient, uint256 amount);
-    event IdeaStatusChanged(uint256 indexed tokenId, bool isActive);
+    event ExecutionProposalSubmitted(uint256 indexed tokenId, uint256 indexed proposalId, address indexed executor);
+    event ExecutionProposalAccepted(uint256 indexed tokenId, uint256 indexed proposalId, address indexed executor);
+    event ExecutionProposalRejected(uint256 indexed tokenId, uint256 indexed proposalId, address indexed executor);
+    event IdeaStatusChanged(uint256 indexed tokenId, IdeaStatus status);
+    event ProjectCreated(uint256 indexed tokenId, uint256 indexed projectTokenId);
     
     // Constants
     uint256 public constant ROYALTY_BASIS_POINTS = 500; // 5%
@@ -74,8 +103,10 @@ contract FoundlingIdea is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
         newIdea.category = category;
         newIdea.createdAt = block.timestamp;
         newIdea.royaltyPercentage = ROYALTY_BASIS_POINTS;
-        newIdea.isActive = true;
+        newIdea.status = IdeaStatus.Open;
         newIdea.totalFunding = 0;
+        newIdea.acceptedProposalId = 0;
+        newIdea.projectTokenId = 0;
         
         emit IdeaCreated(newTokenId, msg.sender, title);
         
@@ -83,47 +114,125 @@ contract FoundlingIdea is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
     }
     
     /**
-     * @dev Fund an idea
+     * @dev Submit execution proposal for an idea
      */
-    function fundIdea(uint256 tokenId) external payable nonReentrant {
+    function submitExecutionProposal(
+        uint256 tokenId,
+        string memory executionPlan,
+        uint256 proposedBudget,
+        uint256 estimatedDuration,
+        uint256 equityRequested
+    ) external returns (uint256) {
         require(_exists(tokenId), "Idea does not exist");
-        require(ideas[tokenId].isActive, "Idea is not active");
-        require(msg.value >= MIN_FUNDING_AMOUNT, "Funding amount too low");
-        require(msg.sender != ideas[tokenId].creator, "Creator cannot fund own idea");
+        require(ideas[tokenId].status == IdeaStatus.Open, "Idea not open for execution");
+        require(msg.sender != ideas[tokenId].creator, "Creator cannot execute own idea");
+        require(bytes(executionPlan).length > 0, "Execution plan cannot be empty");
+        require(proposedBudget > 0, "Budget must be greater than 0");
+        require(estimatedDuration > 0, "Duration must be greater than 0");
+        require(equityRequested <= 100, "Equity cannot exceed 100%");
         
-        Idea storage idea = ideas[tokenId];
+        proposalCounter++;
+        uint256 proposalId = proposalCounter;
         
-        // Add funder if not already funded
-        if (idea.fundingAmounts[msg.sender] == 0) {
-            idea.funders.push(msg.sender);
-        }
+        ExecutionProposal memory newProposal = ExecutionProposal({
+            proposalId: proposalId,
+            executor: msg.sender,
+            executionPlan: executionPlan,
+            proposedBudget: proposedBudget,
+            estimatedDuration: estimatedDuration,
+            equityRequested: equityRequested,
+            proposedAt: block.timestamp,
+            isAccepted: false,
+            isRejected: false
+        });
         
-        idea.fundingAmounts[msg.sender] += msg.value;
-        idea.totalFunding += msg.value;
+        ideas[tokenId].executionProposals.push(newProposal);
         
-        emit IdeaFunded(tokenId, msg.sender, msg.value);
+        emit ExecutionProposalSubmitted(tokenId, proposalId, msg.sender);
+        
+        return proposalId;
     }
     
     /**
-     * @dev Distribute royalties to idea creator
+     * @dev Accept an execution proposal (only idea creator)
      */
-    function distributeRoyalties(uint256 tokenId) external nonReentrant {
+    function acceptExecutionProposal(uint256 tokenId, uint256 proposalId) external {
         require(_exists(tokenId), "Idea does not exist");
-        require(ideas[tokenId].totalFunding > 0, "No funding to distribute");
+        require(ownerOf(tokenId) == msg.sender, "Only creator can accept proposals");
+        require(ideas[tokenId].status == IdeaStatus.Open, "Idea not open for execution");
         
         Idea storage idea = ideas[tokenId];
-        uint256 royaltyAmount = (idea.totalFunding * idea.royaltyPercentage) / 10000;
+        bool proposalFound = false;
         
-        require(royaltyAmount > 0, "No royalties to distribute");
+        for (uint256 i = 0; i < idea.executionProposals.length; i++) {
+            if (idea.executionProposals[i].proposalId == proposalId) {
+                require(!idea.executionProposals[i].isAccepted && !idea.executionProposals[i].isRejected, "Proposal already processed");
+                
+                idea.executionProposals[i].isAccepted = true;
+                idea.acceptedProposalId = proposalId;
+                idea.status = IdeaStatus.InExecution;
+                proposalFound = true;
+                
+                emit ExecutionProposalAccepted(tokenId, proposalId, idea.executionProposals[i].executor);
+                emit IdeaStatusChanged(tokenId, IdeaStatus.InExecution);
+                break;
+            }
+        }
         
-        // Reset funding for next distribution cycle
-        idea.totalFunding = 0;
+        require(proposalFound, "Proposal not found");
+    }
+    
+    /**
+     * @dev Reject an execution proposal (only idea creator)
+     */
+    function rejectExecutionProposal(uint256 tokenId, uint256 proposalId) external {
+        require(_exists(tokenId), "Idea does not exist");
+        require(ownerOf(tokenId) == msg.sender, "Only creator can reject proposals");
+        require(ideas[tokenId].status == IdeaStatus.Open, "Idea not open for execution");
         
-        // Transfer royalties to creator
-        (bool success, ) = idea.creator.call{value: royaltyAmount}("");
-        require(success, "Royalty transfer failed");
+        Idea storage idea = ideas[tokenId];
+        bool proposalFound = false;
         
-        emit RoyaltyDistributed(tokenId, idea.creator, royaltyAmount);
+        for (uint256 i = 0; i < idea.executionProposals.length; i++) {
+            if (idea.executionProposals[i].proposalId == proposalId) {
+                require(!idea.executionProposals[i].isAccepted && !idea.executionProposals[i].isRejected, "Proposal already processed");
+                
+                idea.executionProposals[i].isRejected = true;
+                proposalFound = true;
+                
+                emit ExecutionProposalRejected(tokenId, proposalId, idea.executionProposals[i].executor);
+                break;
+            }
+        }
+        
+        require(proposalFound, "Proposal not found");
+    }
+    
+    /**
+     * @dev Link project NFT when execution begins
+     */
+    function linkProject(uint256 tokenId, uint256 projectTokenId) external {
+        require(_exists(tokenId), "Idea does not exist");
+        require(ideas[tokenId].status == IdeaStatus.InExecution, "Idea not in execution");
+        require(ideas[tokenId].projectTokenId == 0, "Project already linked");
+        
+        ideas[tokenId].projectTokenId = projectTokenId;
+        emit ProjectCreated(tokenId, projectTokenId);
+    }
+    
+    /**
+     * @dev Update idea status (only creator or linked project contract)
+     */
+    function updateIdeaStatus(uint256 tokenId, IdeaStatus newStatus) external {
+        require(_exists(tokenId), "Idea does not exist");
+        require(
+            ownerOf(tokenId) == msg.sender || 
+            ideas[tokenId].projectTokenId != 0, // Allow linked project contract
+            "Not authorized"
+        );
+        
+        ideas[tokenId].status = newStatus;
+        emit IdeaStatusChanged(tokenId, newStatus);
     }
     
     /**
@@ -136,9 +245,12 @@ contract FoundlingIdea is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
         string memory category,
         uint256 createdAt,
         uint256 royaltyPercentage,
-        bool isActive,
+        IdeaStatus status,
         uint256 totalFunding,
-        uint256 funderCount
+        uint256 funderCount,
+        uint256 proposalCount,
+        uint256 acceptedProposalId,
+        uint256 projectTokenId
     ) {
         require(_exists(tokenId), "Idea does not exist");
         Idea storage idea = ideas[tokenId];
@@ -150,37 +262,95 @@ contract FoundlingIdea is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
             idea.category,
             idea.createdAt,
             idea.royaltyPercentage,
-            idea.isActive,
+            idea.status,
             idea.totalFunding,
-            idea.funders.length
+            idea.funders.length,
+            idea.executionProposals.length,
+            idea.acceptedProposalId,
+            idea.projectTokenId
         );
     }
     
     /**
-     * @dev Get funder information
+     * @dev Get execution proposal details
      */
-    function getFunderInfo(uint256 tokenId, address funder) external view returns (uint256 amount) {
+    function getExecutionProposal(uint256 tokenId, uint256 proposalId) external view returns (
+        address executor,
+        string memory executionPlan,
+        uint256 proposedBudget,
+        uint256 estimatedDuration,
+        uint256 equityRequested,
+        uint256 proposedAt,
+        bool isAccepted,
+        bool isRejected
+    ) {
         require(_exists(tokenId), "Idea does not exist");
-        return ideas[tokenId].fundingAmounts[funder];
-    }
-    
-    /**
-     * @dev Get all funders for an idea
-     */
-    function getFunders(uint256 tokenId) external view returns (address[] memory) {
-        require(_exists(tokenId), "Idea does not exist");
-        return ideas[tokenId].funders;
-    }
-    
-    /**
-     * @dev Toggle idea status (only creator)
-     */
-    function toggleIdeaStatus(uint256 tokenId) external {
-        require(_exists(tokenId), "Idea does not exist");
-        require(ownerOf(tokenId) == msg.sender, "Only creator can toggle status");
+        Idea storage idea = ideas[tokenId];
         
-        ideas[tokenId].isActive = !ideas[tokenId].isActive;
-        emit IdeaStatusChanged(tokenId, ideas[tokenId].isActive);
+        for (uint256 i = 0; i < idea.executionProposals.length; i++) {
+            if (idea.executionProposals[i].proposalId == proposalId) {
+                ExecutionProposal storage proposal = idea.executionProposals[i];
+                return (
+                    proposal.executor,
+                    proposal.executionPlan,
+                    proposal.proposedBudget,
+                    proposal.estimatedDuration,
+                    proposal.equityRequested,
+                    proposal.proposedAt,
+                    proposal.isAccepted,
+                    proposal.isRejected
+                );
+            }
+        }
+        
+        revert("Proposal not found");
+    }
+    
+    /**
+     * @dev Get all execution proposals for an idea
+     */
+    function getExecutionProposals(uint256 tokenId) external view returns (uint256[] memory) {
+        require(_exists(tokenId), "Idea does not exist");
+        Idea storage idea = ideas[tokenId];
+        
+        uint256[] memory proposalIds = new uint256[](idea.executionProposals.length);
+        for (uint256 i = 0; i < idea.executionProposals.length; i++) {
+            proposalIds[i] = idea.executionProposals[i].proposalId;
+        }
+        
+        return proposalIds;
+    }
+    
+    /**
+     * @dev Get accepted execution proposal
+     */
+    function getAcceptedProposal(uint256 tokenId) external view returns (
+        address executor,
+        string memory executionPlan,
+        uint256 proposedBudget,
+        uint256 estimatedDuration,
+        uint256 equityRequested
+    ) {
+        require(_exists(tokenId), "Idea does not exist");
+        require(ideas[tokenId].acceptedProposalId != 0, "No accepted proposal");
+        
+        Idea storage idea = ideas[tokenId];
+        uint256 acceptedId = idea.acceptedProposalId;
+        
+        for (uint256 i = 0; i < idea.executionProposals.length; i++) {
+            if (idea.executionProposals[i].proposalId == acceptedId) {
+                ExecutionProposal storage proposal = idea.executionProposals[i];
+                return (
+                    proposal.executor,
+                    proposal.executionPlan,
+                    proposal.proposedBudget,
+                    proposal.estimatedDuration,
+                    proposal.equityRequested
+                );
+            }
+        }
+        
+        revert("Accepted proposal not found");
     }
     
     /**
@@ -196,14 +366,6 @@ contract FoundlingIdea is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
     
     function supportsInterface(bytes4 interfaceId) public view override(ERC721, ERC721URIStorage) returns (bool) {
         return super.supportsInterface(interfaceId);
-    }
-    
-    /**
-     * @dev Emergency withdrawal (only owner)
-     */
-    function emergencyWithdraw() external onlyOwner {
-        (bool success, ) = owner().call{value: address(this).balance}("");
-        require(success, "Withdrawal failed");
     }
 }
 
