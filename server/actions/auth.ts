@@ -13,6 +13,11 @@ export interface LoginRequest {
 export interface SignupRequest {
   email: string;
   password: string;
+  name?: string;
+  bio?: string;
+  type?: 'innovator' | 'executor' | 'funder' | 'hybrid';
+  address?: string;
+  skills?: string[];
 }
 
 export interface OTPRequest {
@@ -119,7 +124,7 @@ export async function login(request: LoginRequest): Promise<LoginResponse> {
 
 export async function signup(request: SignupRequest): Promise<SignupResponse> {
   try {
-    const { email, password } = request;
+    const { email, password, ...userData } = request;
     
     // Validate input
     if (!email || !password) {
@@ -138,7 +143,7 @@ export async function signup(request: SignupRequest): Promise<SignupResponse> {
     
     // Hash password and create user
     const passwordHash = hashPassword(password);
-    const userId = await db.createUser(email, passwordHash);
+    const userId = await db.createUser(email, passwordHash, userData);
     
     return {
       success: true,
@@ -283,3 +288,5 @@ setInterval(() => {
     }
   }
 }, 5 * 60 * 1000); // Every 5 minutes
+
+

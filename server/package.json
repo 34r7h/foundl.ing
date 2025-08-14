@@ -5,6 +5,7 @@
   "scripts": {
     "start": "bun run index.ts",
     "dev": "bun --watch index.ts",
+    "mcp": "bun run mcp/server.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
@@ -14,6 +15,11 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "lmdb": "^3.4.2"
+    "@coinbase/cdp-sdk": "^1.35.0",
+    "@coinbase/onchainkit": "^0.38.19",
+    "@modelcontextprotocol/sdk": "^0.4.0",
+    "lmdb": "^3.4.2",
+    "openai": "^4.28.0",
+    "zod": "^3.22.4"
   }
 }

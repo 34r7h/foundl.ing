@@ -1,0 +1,14 @@
+{
+  "network": "baseTestnet",
+  "chainId": 84532,
+  "deployer": "0x2e988A386a799F506693793c6A5AF6B54dfAaBfB",
+  "contracts": {
+    "MockUSDC": "0x1234567890123456789012345678901234567890",
+    "FoundlingIdea": "0x2345678901234567890123456789012345678901",
+    "FoundlingProject": "0x3456789012345678901234567890123456789012",
+    "FoundlingX402": "0x4567890123456789012345678901234567890123"
+  },
+  "timestamp": "2025-01-13T23:00:00.000Z",
+  "blockNumber": 12345678,
+  "note": "Mock addresses for development - replace with real addresses after deployment"
+}

@@ -6,6 +6,12 @@ interface User {
   id: string;
   email: string;
   passwordHash: string;
+  name: string;
+  bio: string;
+  type: 'innovator' | 'executor' | 'funder' | 'hybrid';
+  address: string;
+  skills: string[];
+  reputation: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -26,12 +32,74 @@ interface DataRecord {
   updatedAt: string;
 }
 
+// New interfaces for Foundling platform
+interface Idea {
+  id: string;
+  creatorId: string;
+  title: string;
+  description: string;
+  category: string;
+  tags: string[];
+  feasibilityScore: number;
+  marketSize: string;
+  competitionLevel: string;
+  developmentComplexity: string;
+  fundingRequired: number;
+  equityOffered: number;
+  status: 'draft' | 'active' | 'funded' | 'in-progress' | 'completed';
+  nftTokenId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface Project {
+  id: string;
+  ideaId: string;
+  executorId: string;
+  title: string;
+  description: string;
+  milestones: Milestone[];
+  totalFunding: number;
+  currentFunding: number;
+  status: 'funding' | 'in-progress' | 'completed' | 'cancelled';
+  startDate: string;
+  estimatedCompletion: string;
+  actualCompletion?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface Milestone {
+  id: string;
+  title: string;
+  description: string;
+  fundingAmount: number;
+  status: 'pending' | 'in-progress' | 'completed' | 'paid';
+  dueDate: string;
+  completedDate?: string;
+}
+
+interface Funding {
+  id: string;
+  projectId: string;
+  funderId: string;
+  amount: number;
+  equityPercentage: number;
+  terms: string;
+  status: 'pending' | 'approved' | 'rejected' | 'completed';
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Database instance
 let db: any = null;
 let usersDB: any = null;
 let sessionsDB: any = null;
 let dataDB: any = null;
-let emailIndexDB: any = null; // Index for email lookups
+let emailIndexDB: any = null;
+let ideasDB: any = null;
+let projectsDB: any = null;
+let fundingDB: any = null;
 
 // Initialize database with proper configuration
 export async function initDB() {
@@ -73,6 +141,22 @@ export async function initDB() {
         // Note: dupSort cannot be combined with cache
       });
 
+      // New databases for Foundling platform
+      ideasDB = db.openDB('ideas', {
+        encoding: 'msgpack',
+        cache: true
+      });
+
+      projectsDB = db.openDB('projects', {
+        encoding: 'msgpack',
+        cache: true
+      });
+
+      fundingDB = db.openDB('funding', {
+        encoding: 'msgpack',
+        cache: true
+      });
+
       console.log('Database initialized successfully');
     } catch (error) {
       console.error('Database initialization error:', error);
@@ -90,8 +174,8 @@ export function getDB() {
   return db;
 }
 
-// User operations with proper indexing
-export async function createUser(email: string, passwordHash: string): Promise<string> {
+// Enhanced user operations
+export async function createUser(email: string, passwordHash: string, userData: Partial<User>): Promise<string> {
   try {
     console.log('Creating user with email:', email);
     
@@ -100,6 +184,12 @@ export async function createUser(email: string, passwordHash: string): Promise<s
       id: userId,
       email,
       passwordHash,
+      name: userData.name || 'Anonymous User',
+      bio: userData.bio || '',
+      type: userData.type || 'hybrid',
+      address: userData.address || '',
+      skills: userData.skills || [],
+      reputation: userData.reputation || 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -148,7 +238,7 @@ export async function getUserByEmail(email: string): Promise<User | null> {
   }
 }
 
-export async function updateUser(userId: string, updates: Partial<User>): Promise<boolean> {
+export async function updateUserProfile(userId: string, updates: Partial<User>): Promise<boolean> {
   try {
     const user = await getUserById(userId);
     if (!user) return false;
@@ -162,7 +252,7 @@ export async function updateUser(userId: string, updates: Partial<User>): Promis
     await usersDB.put(userId, updatedUser);
     return true;
   } catch (error) {
-    console.error('Error in updateUser:', error);
+    console.error('Error in updateUserProfile:', error);
     return false;
   }
 }
@@ -367,6 +457,224 @@ export async function deleteDataRecord(recordId: string): Promise<boolean> {
   }
 }
 
+// Idea operations
+export async function createIdea(ideaData: Omit<Idea, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+  try {
+    const ideaId = `idea_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const idea: Idea = {
+      ...ideaData,
+      id: ideaId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    await ideasDB.put(ideaId, idea);
+    return ideaId;
+  } catch (error) {
+    console.error('Error in createIdea:', error);
+    throw error;
+  }
+}
+
+export async function getIdeaById(ideaId: string): Promise<Idea | null> {
+  try {
+    return ideasDB.get(ideaId);
+  } catch (error) {
+    console.error('Error in getIdeaById:', error);
+    return null;
+  }
+}
+
+export async function getIdeasByCreator(creatorId: string): Promise<Idea[]> {
+  try {
+    const ideas: Idea[] = [];
+    const ideasRange = ideasDB.getRange();
+    
+    for (const { key, value } of ideasRange) {
+      if (value.creatorId === creatorId) {
+        ideas.push(value);
+      }
+    }
+    
+    return ideas.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch (error) {
+    console.error('Error in getIdeasByCreator:', error);
+    return [];
+  }
+}
+
+export async function getAllIdeas(): Promise<Idea[]> {
+  try {
+    const ideas: Idea[] = [];
+    const ideasRange = ideasDB.getRange();
+    
+    for (const { key, value } of ideasRange) {
+      ideas.push(value);
+    }
+    
+    return ideas.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch (error) {
+    console.error('Error in getAllIdeas:', error);
+    return [];
+  }
+}
+
+export async function updateIdea(ideaId: string, updates: Partial<Idea>): Promise<boolean> {
+  try {
+    const idea = await getIdeaById(ideaId);
+    if (!idea) return false;
+
+    const updatedIdea = {
+      ...idea,
+      ...updates,
+      updatedAt: new Date().toISOString()
+    };
+
+    await ideasDB.put(ideaId, updatedIdea);
+    return true;
+  } catch (error) {
+    console.error('Error in updateIdea:', error);
+    return false;
+  }
+}
+
+// Project operations
+export async function createProject(projectData: Omit<Project, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+  try {
+    const projectId = `project_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const project: Project = {
+      ...projectData,
+      id: projectId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    await projectsDB.put(projectId, project);
+    return projectId;
+  } catch (error) {
+    console.error('Error in createProject:', error);
+    throw error;
+  }
+}
+
+export async function getProjectById(projectId: string): Promise<Project | null> {
+  try {
+    return projectsDB.get(projectId);
+  } catch (error) {
+    console.error('Error in getProjectById:', error);
+    return null;
+  }
+}
+
+export async function getProjectsByExecutor(executorId: string): Promise<Project[]> {
+  try {
+    const projects: Project[] = [];
+    const projectsRange = projectsDB.getRange();
+    
+    for (const { key, value } of projectsRange) {
+      if (value.executorId === executorId) {
+        projects.push(value);
+      }
+    }
+    
+    return projects.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch (error) {
+    console.error('Error in getProjectsByExecutor:', error);
+    return [];
+  }
+}
+
+export async function getAllProjects(): Promise<Project[]> {
+  try {
+    const projects: Project[] = [];
+    const projectsRange = projectsDB.getRange();
+    
+    for (const { key, value } of projectsRange) {
+      projects.push(value);
+    }
+    
+    return projects.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch (error) {
+    console.error('Error in getAllProjects:', error);
+    return [];
+  }
+}
+
+export async function updateProject(projectId: string, updates: Partial<Project>): Promise<boolean> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return false;
+
+    const updatedProject = {
+      ...project,
+      ...updates,
+      updatedAt: new Date().toISOString()
+    };
+
+    await projectsDB.put(projectId, updatedProject);
+    return true;
+  } catch (error) {
+    console.error('Error in updateProject:', error);
+    return false;
+  }
+}
+
+// Funding operations
+export async function createFunding(fundingData: Omit<Funding, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+  try {
+    const fundingId = `funding_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const funding: Funding = {
+      ...fundingData,
+      id: fundingId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    await fundingDB.put(fundingId, funding);
+    return fundingId;
+  } catch (error) {
+    console.error('Error in createFunding:', error);
+    throw error;
+  }
+}
+
+export async function getFundingByProject(projectId: string): Promise<Funding[]> {
+  try {
+    const fundings: Funding[] = [];
+    const fundingRange = fundingDB.getRange();
+    
+    for (const { key, value } of fundingRange) {
+      if (value.projectId === projectId) {
+        fundings.push(value);
+      }
+    }
+    
+    return fundings.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch (error) {
+    console.error('Error in getFundingByProject:', error);
+    return [];
+  }
+}
+
+export async function updateFunding(fundingId: string, updates: Partial<Funding>): Promise<boolean> {
+  try {
+    const funding = await fundingDB.get(fundingId);
+    if (!funding) return false;
+
+    const updatedFunding = {
+      ...funding,
+      ...updates,
+      updatedAt: new Date().toISOString()
+    };
+
+    await fundingDB.put(fundingId, updatedFunding);
+    return true;
+  } catch (error) {
+    console.error('Error in updateFunding:', error);
+    return false;
+  }
+}
+
 // Cleanup expired sessions
 export async function cleanupExpiredSessions(): Promise<void> {
   try {
@@ -418,5 +726,8 @@ export async function closeDB(): Promise<void> {
     sessionsDB = null;
     dataDB = null;
     emailIndexDB = null;
+    ideasDB = null;
+    projectsDB = null;
+    fundingDB = null;
   }
 }
